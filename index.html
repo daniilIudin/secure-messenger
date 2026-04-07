@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <title>Secure Messenger</title>
-
 <style>
 body { margin:0; font-family:"Segoe UI", sans-serif; background:#0f172a; color:white; display:flex; height:100vh; }
 #login { display:flex; flex-direction:column; align-items:center; justify-content:center; flex:1; }
@@ -27,7 +26,6 @@ button { padding:10px 15px; margin-left:10px; border-radius:20px; border:none; b
 .indicator { text-align:center; font-size:12px; color:#94a3b8; margin:5px 0; }
 </style>
 </head>
-
 <body>
 
 <div id="login">
@@ -53,21 +51,18 @@ button { padding:10px 15px; margin-left:10px; border-radius:20px; border:none; b
 </div>
 
 <script>
-const APP_KEY = "a4b430ec-a756-40f7-9db4-7959c379eafd";
-
 let ws;
 let myId;
 let currentChat = null;
 let chats = JSON.parse(localStorage.getItem("chats") || "{}");
 let keyPair;
-let sharedKeys = {}; // chatId -> AES key
-let pendingKeys = {}; // chatId -> ждём ключ
+let sharedKeys = {};
+let pendingKeys = {};
 
 async function login() {
   const val = document.getElementById("uidInput").value.trim();
   if(!val) return alert("Введите UID");
   myId = val;
-
   document.getElementById("login").style.display = "none";
   document.getElementById("messenger").style.display = "flex";
   document.getElementById("me").innerText = myId;
@@ -83,7 +78,8 @@ async function login() {
 }
 
 function connect() {
-  ws = new WebSocket(`wss://ws.apinator.io/v1/${APP_KEY}?channel=secure`);
+  ws = new WebSocket("ws://localhost:8080");
+  ws.onopen = () => { ws.send(JSON.stringify({ uid: myId })); };
 
   ws.onmessage = async (e) => {
     const data = JSON.parse(e.data);
@@ -117,7 +113,6 @@ function newChat() {
 function renderChats() {
   const el = document.getElementById("chats");
   el.innerHTML = "";
-
   Object.keys(chats).forEach(c => {
     const div = document.createElement("div");
     div.className = "chat-item" + (c===currentChat ? " active" : "");
@@ -129,7 +124,6 @@ function renderChats() {
 
 async function exchangeKeys(chatId, other) {
   const pub = await crypto.subtle.exportKey("raw", keyPair.publicKey);
-
   ws.send(JSON.stringify({
     type: "key",
     chat: chatId,
@@ -141,11 +135,9 @@ async function exchangeKeys(chatId, other) {
 
 async function handleKeyExchange(data) {
   const pub = Uint8Array.from(atob(data.pub), c => c.charCodeAt(0));
-
   const otherKey = await crypto.subtle.importKey(
     "raw", pub, { name:"ECDH", namedCurve:"P-256" }, true, []
   );
-
   const shared = await crypto.subtle.deriveKey(
     { name:"ECDH", public: otherKey },
     keyPair.privateKey,
@@ -182,11 +174,13 @@ async function send() {
   if(!key) return addIndicator("⚠️ Ждём ключ от собеседника…");
 
   const enc = await encrypt(key, text);
+  const to = currentChat.split("_").find(u => u!==myId);
 
   ws.send(JSON.stringify({
     type:"msg",
     chat:currentChat,
     from:myId,
+    to,
     ...enc
   }));
 
