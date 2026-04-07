@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Secure Messenger</title>
+
+<style>
+body {
+  margin: 0;
+  font-family: Arial;
+  background: #0f172a;
+  color: white;
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 260px;
+  background: #020617;
+  padding: 10px;
+}
+
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.messages {
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.message {
+  padding: 10px;
+  border-radius: 10px;
+  margin: 5px;
+  max-width: 60%;
+}
+
+.me { background: #2563eb; margin-left: auto; }
+.other { background: #334155; }
+
+.input {
+  display: flex;
+  padding: 10px;
+}
+
+input {
+  flex: 1;
+  padding: 10px;
+  background: #1e293b;
+  border: none;
+  color: white;
+}
+
+button {
+  padding: 10px;
+  margin-left: 10px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="sidebar">
+  <h3>👤 <span id="me"></span></h3>
+  <button onclick="newChat()">➕ чат</button>
+  <div id="chats"></div>
+</div>
+
+<div class="chat">
+  <div id="messages" class="messages"></div>
+  <div class="input">
+    <input id="msg">
+    <button onclick="send()">Send</button>
+  </div>
+</div>
+
+<script>
+const APP_KEY = "a4b430ec-a756-40f7-9db4-7959c379eafd";
+let ws;
+let myId = prompt("UID (u1-u10)");
+document.getElementById("me").innerText = myId;
+
+let currentChat = null;
+let chats = JSON.parse(localStorage.getItem("chats") || "{}");
+
+let keyPair;
+let sharedKeys = {}; // chatId -> AES key
+
+init();
+
+async function init() {
+  keyPair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveKey"]
+  );
+
+  connect();
+  renderChats();
+}
+
+function connect() {
+  ws = new WebSocket(`wss://ws.apinator.io/v1/${APP_KEY}?channel=secure`);
+
+  ws.onmessage = async (e) => {
+    const data = JSON.parse(e.data);
+
+    if (data.type === "key") {
+      await handleKeyExchange(data);
+    }
+
+    if (data.type === "msg" && data.chat === currentChat) {
+      const key = sharedKeys[data.chat];
+      if (!key) return;
+
+      const text = await decrypt(key, data);
+      addMessage(data.from, text);
+    }
+  };
+}
+
+function newChat() {
+  const other = prompt("UID:");
+  const chatId = [myId, other].sort().join("_");
+
+  chats[chatId] = true;
+  localStorage.setItem("chats", JSON.stringify(chats));
+
+  exchangeKeys(chatId, other);
+  renderChats();
+}
+
+function renderChats() {
+  const el = document.getElementById("chats");
+  el.innerHTML = "";
+
+  Object.keys(chats).forEach(c => {
+    const div = document.createElement("div");
+    div.innerText = c;
+    div.onclick = () => currentChat = c;
+    el.appendChild(div);
+  });
+}
+
+async function exchangeKeys(chatId, other) {
+  const pub = await crypto.subtle.exportKey("raw", keyPair.publicKey);
+
+  ws.send(JSON.stringify({
+    type: "key",
+    chat: chatId,
+    from: myId,
+    to: other,
+    pub: btoa(String.fromCharCode(...new Uint8Array(pub)))
+  }));
+}
+
+async function handleKeyExchange(data) {
+  if (data.to !== myId) return;
+
+  const pub = Uint8Array.from(atob(data.pub), c => c.charCodeAt(0));
+
+  const otherKey = await crypto.subtle.importKey(
+    "raw",
+    pub,
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    []
+  );
+
+  const shared = await crypto.subtle.deriveKey(
+    { name: "ECDH", public: otherKey },
+    keyPair.privateKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+
+  sharedKeys[data.chat] = shared;
+}
+
+async function encrypt(key, text) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder().encode(text);
+
+  const cipher = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    enc
+  );
+
+  return {
+    cipher: btoa(String.fromCharCode(...new Uint8Array(cipher))),
+    iv: btoa(String.fromCharCode(...iv))
+  };
+}
+
+async function decrypt(key, data) {
+  const iv = Uint8Array.from(atob(data.iv), c => c.charCodeAt(0));
+  const cipher = Uint8Array.from(atob(data.cipher), c => c.charCodeAt(0));
+
+  const dec = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    cipher
+  );
+
+  return new TextDecoder().decode(dec);
+}
+
+async function send() {
+  const text = document.getElementById("msg").value;
+  if (!currentChat) return;
+
+  const key = sharedKeys[currentChat];
+  if (!key) return alert("Нет ключа");
+
+  const enc = await encrypt(key, text);
+
+  ws.send(JSON.stringify({
+    type: "msg",
+    chat: currentChat,
+    from: myId,
+    ...enc
+  }));
+
+  addMessage(myId, text);
+}
+
+function addMessage(from, text) {
+  const div = document.createElement("div");
+  div.className = "message " + (from === myId ? "me" : "other");
+  div.innerText = from + ": " + text;
+  document.getElementById("messages").appendChild(div);
+}
+</script>
+
+</body>
+</html>
