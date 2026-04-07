@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <title>Secure Messenger</title>
-
 <style>
-body { margin:0; font-family:Arial; background:#0f172a; color:white; display:flex; height:100vh; }
+body { margin:0; font-family:Arial; background:#0f172a; color:white; display:flex; flex-direction:column; height:100vh; }
+#login { display:flex; flex-direction:column; align-items:center; justify-content:center; flex:1; }
+#login input { padding:10px; margin:10px; width:200px; }
+#login button { padding:10px 20px; cursor:pointer; }
+#messenger { display:none; flex:1; flex-direction:row; }
 .sidebar { width:260px; background:#020617; padding:10px; }
 .chat { flex:1; display:flex; flex-direction:column; }
 .messages { flex:1; padding:10px; overflow-y:auto; }
@@ -18,20 +21,26 @@ button { padding:10px; margin-left:10px; cursor:pointer; }
 .indicator { opacity:0.5; font-size:12px; margin:5px; }
 </style>
 </head>
-
 <body>
 
-<div class="sidebar">
-  <h3>👤 <span id="me"></span></h3>
-  <button onclick="newChat()">➕ чат</button>
-  <div id="chats"></div>
+<div id="login">
+  <h2>Введите UID (например u1-u10)</h2>
+  <input id="uidInput" placeholder="UID">
+  <button onclick="login()">Войти</button>
 </div>
 
-<div class="chat">
-  <div id="messages" class="messages"></div>
-  <div class="input">
-    <input id="msg" placeholder="Введите сообщение">
-    <button onclick="send()">Send</button>
+<div id="messenger">
+  <div class="sidebar">
+    <h3>👤 <span id="me"></span></h3>
+    <button onclick="newChat()">➕ чат</button>
+    <div id="chats"></div>
+  </div>
+  <div class="chat">
+    <div id="messages" class="messages"></div>
+    <div class="input">
+      <input id="msg" placeholder="Введите сообщение">
+      <button onclick="send()">Send</button>
+    </div>
   </div>
 </div>
 
@@ -39,19 +48,22 @@ button { padding:10px; margin-left:10px; cursor:pointer; }
 const APP_KEY = "a4b430ec-a756-40f7-9db4-7959c379eafd";
 
 let ws;
-let myId = prompt("Введите UID (u1-u10)");
-document.getElementById("me").innerText = myId;
-
+let myId;
 let currentChat = null;
 let chats = JSON.parse(localStorage.getItem("chats") || "{}");
-
 let keyPair;
 let sharedKeys = {}; // chatId -> AES key
-let pendingKeys = {}; // chatId -> true если ждём ключ
+let pendingKeys = {}; // chatId -> ждём ключ
 
-init();
+async function login() {
+  const val = document.getElementById("uidInput").value.trim();
+  if(!val) return alert("Введите UID");
+  myId = val;
 
-async function init() {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("messenger").style.display = "flex";
+  document.getElementById("me").innerText = myId;
+
   keyPair = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
     true,
@@ -74,7 +86,7 @@ function connect() {
 
     if(data.type === "msg" && data.chat === currentChat) {
       const key = sharedKeys[data.chat];
-      if(!key) return; // ключ ещё не получен
+      if(!key) return;
       const text = await decrypt(key, data);
       addMessage(data.from, text);
     }
@@ -84,12 +96,12 @@ function connect() {
 function newChat() {
   const other = prompt("UID пользователя:");
   if(!other) return;
-
   const chatId = [myId, other].sort().join("_");
+
   chats[chatId] = true;
   localStorage.setItem("chats", JSON.stringify(chats));
 
-  pendingKeys[chatId] = true; // ждём ключ от собеседника
+  pendingKeys[chatId] = true; // ждём ключ
   exchangeKeys(chatId, other);
   renderChats();
 }
@@ -131,7 +143,7 @@ async function handleKeyExchange(data) {
     keyPair.privateKey,
     { name:"AES-GCM", length:256 },
     false,
-    ["encrypt", "decrypt"]
+    ["encrypt","decrypt"]
   );
 
   sharedKeys[data.chat] = shared;
@@ -162,7 +174,13 @@ async function send() {
   if(!key) return addIndicator("⚠️ Ждём ключ от собеседника…");
 
   const enc = await encrypt(key, text);
-  ws.send({type:"msg", chat:currentChat, from:myId, ...enc, } = enc, JSON.stringify);
+
+  ws.send(JSON.stringify({
+    type:"msg",
+    chat:currentChat,
+    from:myId,
+    ...enc
+  }));
 
   addMessage(myId, text);
   document.getElementById("msg").value = "";
